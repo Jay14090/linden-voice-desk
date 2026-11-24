@@ -22,3 +22,15 @@ def test_spell_phone_numbers(text, expected):
 def test_guard_still_sees_digit_readback():
     args = {"phone_number": "9182736450"}
     assert readback_unanswered("book_appointment", args, "I have 91827 36450. Is that right?")
+
+
+@pytest.mark.parametrize("text", ["No, that's all. Thank you. Bye.", "Goodbye!", "no thanks", "That's it, thanks", "I'm done"])
+def test_goodbyes(text):
+    from app.tools import caller_said_goodbye
+    assert caller_said_goodbye(text)
+
+
+@pytest.mark.parametrize("text", ["Okay.", "Thanks.", "Alright", "Yes, that's right.", "Hmm"])
+def test_not_goodbyes(text):
+    from app.tools import caller_said_goodbye
+    assert not caller_said_goodbye(text)

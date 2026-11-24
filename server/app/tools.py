@@ -312,6 +312,23 @@ def end_call(store: Store) -> dict:
     return {"ok": True}
 
 
+_GOODBYE = re.compile(
+    r"\b(bye|goodbye|good bye|that'?s all|that is all|that'?s it|nothing else|no,? thanks?|no thank you|"
+    r"i'?m done|we'?re done|all done|hang up|end (the )?call|see you|have a (good|nice|great) day|take care)\b",
+    re.I,
+)
+
+NOT_DONE = {
+    "ok": False,
+    "error": "caller_not_done",
+    "message": "The caller hasn't said goodbye. Don't hang up. Ask if there's anything else you can help with.",
+}
+
+
+def caller_said_goodbye(text: str) -> bool:
+    return bool(_GOODBYE.search(text or ""))
+
+
 _IMPLS: dict[str, Callable[..., dict]] = {
     "check_doctor_availability": check_doctor_availability,
     "book_appointment": book_appointment,
@@ -380,6 +397,11 @@ def register_tools(llm, store: Store, session_id: str, turn_text=None, before_ha
                 await params.pipeline_worker.rtvi.send_server_message({"type": f"appointment.{kind}", "appointment": record})
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"could not notify client: {e}")
+
+        if name == "end_call" and turn_text is not None and not caller_said_goodbye(turn_text.last_caller):
+            # "Okay" or "thanks" isn't a goodbye: keep the line open.
+            await params.result_callback(dict(NOT_DONE))
+            return
 
         if name == "end_call":
             # Don't run the LLM again; flush the goodbye that's already queued, then close.

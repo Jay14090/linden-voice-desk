@@ -65,7 +65,12 @@ def build_llm(instruction: str):
 
         model = os.getenv("OPENAI_MODEL") or "gpt-5.4-mini"
         opts = openai_model_kwargs(model)
-        settings = OpenAILLMService.Settings(model=model, system_instruction=instruction, extra={k: v for k, v in opts.items() if k != "temperature"})
+        settings = OpenAILLMService.Settings(
+            model=model,
+            system_instruction=instruction,
+            max_completion_tokens=220,  # replies are spoken: keep them short, and no essays if someone goes off-topic
+            extra={k: v for k, v in opts.items() if k != "temperature"},
+        )
         if "temperature" in opts:
             settings.temperature = opts["temperature"]
         return OpenAILLMService(api_key=os.environ["OPENAI_API_KEY"], settings=settings)
@@ -210,7 +215,7 @@ async def run_call(connection: SmallWebRTCConnection, store: Store, session_id: 
 
     @user_aggregator.event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(aggregator, strategy, message: UserTurnStoppedMessage):
-        turn_text.reset()  # the caller answered; anything the agent says next is a new turn
+        turn_text.reset(message.content or "")  # the caller answered; anything the agent says next is a new turn
         logger.info(f"[{session_id}] caller: {message.content}")
 
     @assistant_aggregator.event_handler("on_assistant_turn_stopped")

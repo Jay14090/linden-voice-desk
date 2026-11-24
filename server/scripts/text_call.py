@@ -24,7 +24,7 @@ from openai import OpenAI
 from app.bot import openai_model_kwargs
 from app.prompt import GREETING, system_prompt
 from app.store import Store
-from app.tools import TOOLS, run_tool
+from app.tools import NOT_DONE, TOOLS, caller_said_goodbye, run_tool
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
@@ -72,10 +72,12 @@ def main():
     ]
     print(f"[36mAGENT[0m (fixed): {GREETING}")
 
+    last_caller = {"text": ""}
+
     def agent_turn():
         while True:
             t = time.time()
-            resp = client.chat.completions.create(model=model, messages=messages, tools=openai_tools(), **openai_model_kwargs(model))
+            resp = client.chat.completions.create(model=model, messages=messages, tools=openai_tools(), max_completion_tokens=220, **openai_model_kwargs(model))
             msg = resp.choices[0].message
             messages.append(msg.model_dump(exclude_none=True))
             if msg.content:
@@ -84,7 +86,10 @@ def main():
                 return
             for call in msg.tool_calls:
                 fargs = json.loads(call.function.arguments or "{}")
-                result = run_tool(store, call.function.name, fargs, msg.content or "")
+                if call.function.name == "end_call" and not caller_said_goodbye(last_caller["text"]):
+                    result = dict(NOT_DONE)
+                else:
+                    result = run_tool(store, call.function.name, fargs, msg.content or "")
                 result.pop("_record", None)
                 print(f"\033[33m  tool\033[0m {call.function.name}({json.dumps(fargs)}) -> ok={result.get('ok')} {result.get('error') or ''}")
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result)})
@@ -98,6 +103,7 @@ def main():
         if not interactive:
             print(f"\033[32mCALLER\033[0m: {line}")
         messages.append({"role": "user", "content": line})
+        last_caller["text"] = line
         agent_turn()
 
     print("\nappointments made in this call:")

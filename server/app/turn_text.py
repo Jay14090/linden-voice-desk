@@ -14,9 +14,11 @@ class AgentTurnText(FrameProcessor):
     def __init__(self):
         super().__init__()
         self.text = ""
+        self.last_caller = ""  # what the caller said in their latest turn
 
-    def reset(self) -> None:
+    def reset(self, caller_said: str = "") -> None:
         self.text = ""
+        self.last_caller = caller_said
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
