@@ -1,0 +1,16 @@
+[project]
+name = "linden-voice-desk"
+version = "1.0.0"
+description = "Voice front desk for a clinic: Pipecat + ElevenLabs + LLM tools"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.165.0",
+    "pipecat-ai[elevenlabs,google,openai,runner,silero,webrtc]>=1.17.0",
+    "python-dotenv>=1.2.4",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]

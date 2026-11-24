@@ -1,0 +1,26 @@
+# secrets
+.env
+*.env.local
+
+# python
+server/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# runtime data
+server/data/
+server/server.log
+web.log
+
+# web
+web/node_modules/
+web/dist/
+*.tsbuildinfo
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.playwright-mcp/
