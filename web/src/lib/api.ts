@@ -13,8 +13,9 @@ export type Appointment = {
   slot_id: string;
   phone: string;
   patient_name: string | null;
+  reason: string | null;
   status: "booked" | "cancelled";
-  source: "voice" | "seed";
+  source: "voice" | "seed" | "desk";
   created_at: string;
   cancelled_at: string | null;
   day: string;
@@ -38,7 +39,7 @@ export type ToolEvent = {
 
 export type AppointmentEvent = {
   session: string;
-  kind: "booked" | "cancelled";
+  kind: "booked" | "cancelled" | "updated";
   appointment: Appointment;
 };
 
@@ -54,9 +55,39 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export type AppointmentPatch = Partial<{
+  patient_name: string;
+  phone: string;
+  reason: string;
+  doctor_id: string;
+  day: string;
+  start: string;
+  status: "booked" | "cancelled";
+}>;
+
+export type AppointmentCreate = {
+  doctor_id: string;
+  day: string;
+  start: string;
+  phone: string;
+  patient_name?: string;
+  reason?: string;
+};
+
+async function send<T>(method: string, path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(typeof detail?.detail === "string" ? detail.detail : `Request failed (${res.status})`);
+  }
+  return res.json() as Promise<T>;
+}
+
 export const api = {
   doctors: () => get<Doctor[]>("/api/doctors"),
   appointments: () => get<Appointment[]>("/api/appointments"),
+  update: (id: string, patch: AppointmentPatch) => send<Appointment>("PATCH", `/api/appointments/${id}`, patch),
+  create: (body: AppointmentCreate) => send<Appointment>("POST", "/api/appointments", body),
   health: () => get<{ ok: boolean; llm: string; keys: Record<string, boolean> }>("/api/health"),
   reset: () => fetch("/api/reset", { method: "POST" }),
 };
@@ -123,6 +154,10 @@ export function relativeDay(iso: string, today: string) {
 
 export function maskPhone(digits: string) {
   return `${digits.slice(0, 5)} ${digits.slice(5, 6)}••${digits.slice(8)}`;
+}
+
+export function formatPhone(digits: string) {
+  return `${digits.slice(0, 5)} ${digits.slice(5)}`;
 }
 
 export function shortDoctor(name: string) {

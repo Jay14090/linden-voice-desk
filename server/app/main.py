@@ -10,7 +10,8 @@ from datetime import timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,7 +27,7 @@ from pipecat.transports.smallwebrtc.request_handler import (
 from .bot import run_call, warm_phrases
 from .events import bus
 from .prompt import AGENT_NAME, CLINIC_NAME
-from .store import Store, today
+from .store import Store, StoreError, normalize_phone, today
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env", override=True)
@@ -121,6 +122,50 @@ def doctors():
 @app.get("/api/appointments")
 def appointments():
     return store.appointments()
+
+
+class AppointmentPatch(BaseModel):
+    patient_name: str | None = None
+    phone: str | None = None
+    reason: str | None = None
+    doctor_id: str | None = None
+    day: str | None = None
+    start: str | None = None
+    status: str | None = None
+
+
+class AppointmentCreate(BaseModel):
+    doctor_id: str
+    day: str
+    start: str
+    phone: str
+    patient_name: str | None = None
+    reason: str | None = None
+
+
+@app.patch("/api/appointments/{appointment_id}")
+def edit_appointment(appointment_id: str, patch: AppointmentPatch):
+    before = store.appointment(appointment_id)
+    try:
+        after = store.update(appointment_id, **patch.model_dump(exclude_none=True))
+    except StoreError as e:
+        raise HTTPException(status_code=404 if e.code == "not_found" else 409, detail=e.message) from None
+    kind = "cancelled" if before and before["status"] == "booked" and after["status"] == "cancelled" else "updated"
+    bus.publish("appointment", {"session": "desk", "kind": kind, "appointment": after})
+    return after
+
+
+@app.post("/api/appointments")
+def create_appointment(body: AppointmentCreate):
+    phone = normalize_phone(body.phone)
+    if not phone:
+        raise HTTPException(status_code=422, detail="Phone must be a 10-digit mobile number.")
+    try:
+        appt = store.book(body.doctor_id, body.day, body.start, phone, (body.patient_name or "").strip() or None, source="desk", reason=body.reason)
+    except StoreError as e:
+        raise HTTPException(status_code=409, detail=e.message) from None
+    bus.publish("appointment", {"session": "desk", "kind": "booked", "appointment": appt})
+    return appt
 
 
 @app.post("/api/reset")

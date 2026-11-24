@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
-import { type Appointment, relativeDay, time12, todayIST } from "../lib/api";
+import { relativeDay, shortDoctor, time12, todayIST } from "../lib/api";
 import type { CallApi, Line } from "../lib/useCall";
 import { Battery, Check, Cross, Leaf, Mic, MicOff, PhoneDown, Signal, Speaker, SpeakerLow } from "./icons";
-import { Waveform } from "./Waveform";
 
 function useClock() {
   const [now, setNow] = useState(() => new Date());
@@ -26,53 +25,73 @@ function useElapsed(startedAt: number | null) {
 
 export const fmtDuration = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
-function Ticket({ action, a }: { action: "booked" | "cancelled"; a: Appointment }) {
-  const t = time12(a.start);
+/** Avatar with rings that swell with whoever is talking: ivory for the agent, mint for the caller. */
+function VoiceAvatar({ call }: { call: CallApi }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const buf = new Uint8Array(256);
+    let raf = 0;
+    let smooth = 0;
+    const level = (an: AnalyserNode | null) => {
+      if (!an) return 0;
+      an.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128;
+        sum += v * v;
+      }
+      return Math.sqrt(sum / buf.length);
+    };
+    const draw = () => {
+      const agent = level(call.analysers.remote.current);
+      const caller = call.muted ? 0 : level(call.analysers.local.current);
+      const v = Math.min(1, Math.max(agent, caller) * 4);
+      smooth += (v - smooth) * 0.25;
+      const el = ref.current;
+      if (el) {
+        el.style.setProperty("--lvl", smooth.toFixed(3));
+        el.dataset.who = agent > caller ? "agent" : caller > 0.02 ? "caller" : "";
+      }
+      raf = requestAnimationFrame(draw);
+    };
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, [call.analysers, call.muted]);
+
   return (
-    <div className={`ticket ${action}`} role="status">
-      <div className="ticket-top">
-        <span className="badge">
-          {action === "booked" ? <Check size={13} /> : <Cross size={13} />}
-          {action === "booked" ? "Appointment booked" : "Appointment cancelled"}
-        </span>
-        <span className="ref">{a.id}</span>
-      </div>
-      <div className="ticket-when">
-        <span className="big">
-          {t.clock}
-          <small>{t.suffix}</small>
-        </span>
-        <span className="day">{relativeDay(a.day, todayIST())}</span>
-      </div>
-      <div className="ticket-who">
-        <span>{a.doctor_name}</span>
-        <span>
-          {a.specialty} · Room {a.room}
-        </span>
-      </div>
+    <div className="voice-avatar" ref={ref}>
+      <span className="va-ring va-r1" />
+      <span className="va-ring va-r2" />
+      <span className="avatar xl">
+        <Leaf size={46} />
+      </span>
     </div>
   );
 }
 
-function Transcript({ lines }: { lines: Line[] }) {
-  const ref = useRef<HTMLDivElement>(null);
+/** Phone-style notification that drops in when the agent books or cancels. */
+function Notice({ lines }: { lines: Line[] }) {
+  const last = [...lines].reverse().find((l) => l.kind === "card");
+  const [shown, setShown] = useState<string | null>(null);
   useEffect(() => {
-    const el = ref.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [lines]);
+    if (!last) return;
+    setShown(last.id);
+    const id = window.setTimeout(() => setShown(null), 6000);
+    return () => window.clearTimeout(id);
+  }, [last?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  if (!last || last.kind !== "card" || shown !== last.id) return null;
+  const a = last.appointment;
+  const t = time12(a.start);
   return (
-    <div className="transcript" ref={ref} aria-live="polite">
-      {lines.length === 0 && <p className="hint">Say hello. Ask for a doctor, a day, or to cancel.</p>}
-      {lines.map((l) =>
-        l.kind === "card" ? (
-          <Ticket key={l.id} action={l.action} a={l.appointment} />
-        ) : (
-          <div key={l.id} className={`bubble ${l.kind} ${l.kind === "caller" && !l.final ? "interim" : ""}`}>
-            {l.text}
-          </div>
-        ),
-      )}
+    <div className={`notice ${last.action}`} role="status">
+      <span className="notice-ic">{last.action === "booked" ? <Check size={15} /> : <Cross size={15} />}</span>
+      <span className="notice-body">
+        <strong>{last.action === "booked" ? "Appointment booked" : "Appointment cancelled"}</strong>
+        <span>
+          {shortDoctor(a.doctor_name)} · {relativeDay(a.day, todayIST())}, {t.clock} {t.suffix} · Room {a.room}
+        </span>
+      </span>
     </div>
   );
 }
@@ -96,6 +115,15 @@ export function PhoneCall({ call, onClose }: { call: CallApi; onClose: () => voi
     return () => window.removeEventListener("keydown", onKey);
   }, [state, call, onClose]);
 
+  const status =
+    state === "dialing"
+      ? "calling…"
+      : live
+        ? fmtDuration(elapsed)
+        : state === "ended"
+          ? `Call ended · ${fmtDuration(call.endedAfter)}`
+          : call.error;
+
   return (
     <div className={`phone-wrap state-${state}`}>
       <div className="phone" role="dialog" aria-label="Call with Linden Clinic">
@@ -111,8 +139,17 @@ export function PhoneCall({ call, onClose }: { call: CallApi; onClose: () => voi
             </span>
           </div>
 
-          {(state === "dialing" || state === "failed") && (
-            <div className="dial">
+          {live && <Notice lines={call.lines} />}
+
+          <div className="call-head">
+            <h3 className="callee">Linden Clinic</h3>
+            <p className={`call-status ${live ? "live" : ""}`}>{status}</p>
+          </div>
+
+          <div className="call-stage">
+            {live ? (
+              <VoiceAvatar call={call} />
+            ) : (
               <div className={`halo ${state === "dialing" ? "ringing" : ""}`}>
                 <span className="ring r1" />
                 <span className="ring r2" />
@@ -121,64 +158,39 @@ export function PhoneCall({ call, onClose }: { call: CallApi; onClose: () => voi
                   <Leaf size={46} />
                 </span>
               </div>
-              <h3 className="callee">Linden Clinic</h3>
-              <p className="dial-sub">{state === "dialing" ? "Calling front desk…" : call.error}</p>
-            </div>
-          )}
-
-          {(live || state === "ended") && (
-            <div className="incall">
-              <div className="incall-head">
-                <span className="avatar sm">
-                  <Leaf size={20} />
-                </span>
-                <span className="incall-who">
-                  <strong>Linden Clinic</strong>
-                  <span>Maya · front desk</span>
-                </span>
-                <span className={`timer ${live ? "" : "stopped"}`}>{fmtDuration(live ? elapsed : call.endedAfter)}</span>
-              </div>
-
-              {live ? (
-                <Waveform local={call.analysers.local} remote={call.analysers.remote} muted={call.muted} />
-              ) : (
-                <div className="ended-banner">
-                  <strong>Call ended</strong>
-                  <span>
-                    {[booked && `${booked} booked`, cancelled && `${cancelled} cancelled`].filter(Boolean).join(" · ") || "No changes"}
-                  </span>
-                </div>
-              )}
-
-              <Transcript lines={call.lines} />
-            </div>
-          )}
+            )}
+            {state === "ended" && (
+              <p className="call-summary">
+                {[booked && `${booked} booked`, cancelled && `${cancelled} cancelled`].filter(Boolean).join(" · ") || "No changes made"}
+              </p>
+            )}
+          </div>
 
           <div className="controls">
             {live && (
               <>
-                <button className={`ctl ${call.muted ? "on" : ""}`} onClick={call.toggleMute} aria-pressed={call.muted}>
-                  <span className="ctl-ic">{call.muted ? <MicOff /> : <Mic />}</span>
-                  <span className="ctl-l">{call.muted ? "Unmute" : "Mute"}</span>
-                </button>
-                <button className="ctl end" onClick={call.hangUp}>
+                <div className="ctl-row">
+                  <button className={`ctl ${call.muted ? "on" : ""}`} onClick={call.toggleMute} aria-pressed={call.muted}>
+                    <span className="ctl-ic">{call.muted ? <MicOff /> : <Mic />}</span>
+                    <span className="ctl-l">{call.muted ? "unmute" : "mute"}</span>
+                  </button>
+                  <button className={`ctl ${call.speaker ? "on" : ""}`} onClick={call.toggleSpeaker} aria-pressed={call.speaker}>
+                    <span className="ctl-ic">{call.speaker ? <Speaker /> : <SpeakerLow />}</span>
+                    <span className="ctl-l">speaker</span>
+                  </button>
+                </div>
+                <button className="ctl end" onClick={call.hangUp} aria-label="End call">
                   <span className="ctl-ic">
-                    <PhoneDown size={26} />
+                    <PhoneDown size={28} />
                   </span>
-                  <span className="ctl-l">End</span>
-                </button>
-                <button className={`ctl ${call.speaker ? "" : "on"}`} onClick={call.toggleSpeaker} aria-pressed={!call.speaker}>
-                  <span className="ctl-ic">{call.speaker ? <Speaker /> : <SpeakerLow />}</span>
-                  <span className="ctl-l">{call.speaker ? "Speaker" : "Quiet"}</span>
                 </button>
               </>
             )}
             {state === "dialing" && (
-              <button className="ctl end" onClick={call.hangUp}>
+              <button className="ctl end" onClick={call.hangUp} aria-label="Cancel call">
                 <span className="ctl-ic">
-                  <PhoneDown size={26} />
+                  <PhoneDown size={28} />
                 </span>
-                <span className="ctl-l">Cancel</span>
               </button>
             )}
             {(state === "ended" || state === "failed") && (

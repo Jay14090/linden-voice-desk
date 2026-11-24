@@ -195,3 +195,40 @@ def test_guard_allows_after_caller_answered(s):
 def test_guard_allows_statement_without_question(s):
     args = {"phone_number": "9820123457", "phone_confirmed": True, "doctor_id": "mehta", "date": iso(0), "time": "11:30"}
     assert tools.run_tool(s, "book_appointment", args, "Booking that under 98201 23457 now.")["ok"]
+
+
+# ---------- front-desk edits ----------
+
+def test_book_records_reason(s):
+    r = tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00", "Jay", reason="itchy rash")
+    assert r["_record"]["reason"] == "itchy rash"
+
+
+def test_update_details_and_reschedule(s):
+    appt = tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00", "Jay")["_record"]
+    out = s.update(appt["id"], patient_name="Jay C", phone="+91 88888 00000", reason="skin allergy", day=iso(1), start="12:30")
+    assert (out["patient_name"], out["phone"], out["reason"], out["start"]) == ("Jay C", "8888800000", "skin allergy", "12:30")
+    # the old slot is free again, the new one is taken
+    by_start = {x["start"]: x["free"] for x in s.slots(doctor_id="iyer", day=iso(1))}
+    assert by_start["12:00"] and not by_start["12:30"]
+
+
+def test_update_rejects_taken_slot_and_bad_phone(s):
+    a = tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00")["_record"]
+    tools.book_appointment(s, "8888800000", True, "iyer", iso(1), "12:30")
+    with pytest.raises(store_mod.StoreError) as e:
+        s.update(a["id"], start="12:30")
+    assert e.value.code == "slot_taken"
+    with pytest.raises(store_mod.StoreError):
+        s.update(a["id"], phone="123")
+
+
+def test_cancel_and_restore(s):
+    a = tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00")["_record"]
+    assert s.update(a["id"], status="cancelled")["status"] == "cancelled"
+    assert s.update(a["id"], status="booked")["status"] == "booked"
+
+
+def test_manual_booking_source(s):
+    a = s.book("mehta", iso(1), "10:00", "9999900000", "Walk-in", source="desk", reason="fever")
+    assert a["source"] == "desk" and a["reason"] == "fever"

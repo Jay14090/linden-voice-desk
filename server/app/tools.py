@@ -136,6 +136,7 @@ def book_appointment(
     date: str,
     time: str,
     patient_name: str | None = None,
+    reason: str | None = None,
 ) -> dict:
     phone = normalize_phone(phone_number)
     if not phone:
@@ -155,7 +156,7 @@ def book_appointment(
         return {"ok": False, "error": "bad_date_or_time", "message": "Use date YYYY-MM-DD and time HH:MM (24-hour)."}
 
     try:
-        appt = store.book(doctor_id, day, start, phone, (patient_name or "").strip() or None)
+        appt = store.book(doctor_id, day, start, phone, (patient_name or "").strip() or None, reason=(reason or "").strip() or None)
     except StoreError as e:
         alternatives = [s["start"] for s in store.slots(doctor_id=doctor_id, day=day, only_free=True)][:MAX_SLOTS_PER_DAY]
         return {
@@ -284,6 +285,7 @@ TOOLS = ToolsSchema(
                 "date": {"type": "string", "description": "YYYY-MM-DD"},
                 "time": {"type": "string", "description": "Slot start, HH:MM 24-hour, exactly as returned by check_doctor_availability."},
                 "patient_name": {"type": "string", "description": "Patient's name if the caller gave it."},
+                "reason": {"type": "string", "description": "The caller's problem in a few words, e.g. 'itchy rash on arm for 3 days'. Include the age if it's a child."},
             },
             required=["phone_number", "phone_confirmed", "doctor_id", "date", "time"],
         ),

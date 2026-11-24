@@ -30,19 +30,19 @@ DOCTORS = [
     ("das", "Dr. Arjun Das", "ENT Specialist", "115", {0, 3, 5}, [("10:00", "12:30"), ("17:30", "19:30")]),
 ]
 
-# A few existing bookings so the board doesn't open empty: (doctor, day offset, time, phone, name)
+# A few existing bookings so the board doesn't open empty: (doctor, day offset, time, phone, name, reason)
 SEED_BOOKINGS = [
-    ("mehta", 0, "10:00", "9876501234", "Rohan Verma"),
-    ("mehta", 0, "18:00", "9930012457", "Kabir Malhotra"),
-    ("mehta", 1, "17:30", "9123456780", "Priya Nair"),
-    ("iyer", 0, "16:30", "9988776655", "Sana Qureshi"),
-    ("iyer", 2, "12:00", "9845098450", "Tara Menon"),
-    ("sheikh", 0, "09:30", "9001122334", "Aditya Joshi"),
-    ("sheikh", 1, "10:30", "9819911223", "Ishaan Gupta"),
-    ("kulkarni", 0, "15:00", "9812345670", "Meera Pillai"),
-    ("kulkarni", 1, "16:30", "9767001122", "Dev Bhatia"),
-    ("rao", 1, "11:00", "9821176543", "Suresh Iyer"),
-    ("das", 0, "18:30", "9898123123", "Nikhil Rane"),
+    ("mehta", 0, "10:00", "9876501234", "Rohan Verma", "Fever and body ache for two days"),
+    ("mehta", 0, "18:00", "9930012457", "Kabir Malhotra", "Routine BP check-up"),
+    ("mehta", 1, "17:30", "9123456780", "Priya Nair", "Stomach upset"),
+    ("iyer", 0, "16:30", "9988776655", "Sana Qureshi", "Acne flare-up"),
+    ("iyer", 2, "12:00", "9845098450", "Tara Menon", "Hair fall"),
+    ("sheikh", 0, "09:30", "9001122334", "Aditya Joshi", "Child, 6, cough and cold"),
+    ("sheikh", 1, "10:30", "9819911223", "Ishaan Gupta", "Child, 3, vaccination follow-up"),
+    ("kulkarni", 0, "15:00", "9812345670", "Meera Pillai", "Knee pain after running"),
+    ("kulkarni", 1, "16:30", "9767001122", "Dev Bhatia", "Lower back pain"),
+    ("rao", 1, "11:00", "9821176543", "Suresh Iyer", "Palpitations"),
+    ("das", 0, "18:30", "9898123123", "Nikhil Rane", "Blocked nose and sinus pain"),
 ]
 
 
@@ -136,6 +136,7 @@ class Store:
                     slot_id TEXT NOT NULL REFERENCES slots(id),
                     phone TEXT NOT NULL,
                     patient_name TEXT,
+                    reason TEXT,
                     status TEXT NOT NULL CHECK (status IN ('booked', 'cancelled')),
                     source TEXT NOT NULL DEFAULT 'voice',
                     created_at TEXT NOT NULL,
@@ -147,6 +148,10 @@ class Store:
                 CREATE INDEX IF NOT EXISTS appointments_by_phone ON appointments(phone);
                 """
             )
+            # databases created before the reason column existed
+            cols = {r["name"] for r in self._db.execute("PRAGMA table_info(appointments)")}
+            if "reason" not in cols:
+                self._db.execute("ALTER TABLE appointments ADD COLUMN reason TEXT")
 
     def seed(self, start: date | None = None) -> None:
         """Reset to the demo dataset, with slots for the next clinic days."""
@@ -173,7 +178,7 @@ class Store:
                                 (_slot_id(doc_id, day, t.strftime("%H:%M")), doc_id, day.isoformat(), t.strftime("%H:%M")),
                             )
                             t += timedelta(minutes=SLOT_MINUTES)
-            for doc_id, offset, start_time, phone, name in SEED_BOOKINGS:
+            for doc_id, offset, start_time, phone, name, reason in SEED_BOOKINGS:
                 # the doctor may not work that weekday: use their next working day
                 for extra in range(DAYS_AHEAD):
                     slot = self._db.execute(
@@ -181,7 +186,7 @@ class Store:
                         (_slot_id(doc_id, start + timedelta(days=offset + extra), start_time),),
                     ).fetchone()
                     if slot:
-                        self._insert_appointment(slot["id"], phone, name, source="seed")
+                        self._insert_appointment(slot["id"], phone, name, source="seed", reason=reason)
                         break
 
     # ---------- reads ----------
@@ -282,20 +287,78 @@ class Store:
 
     # ---------- writes ----------
 
-    def book(self, doctor_id: str, day: str, start: str, phone: str, patient_name: str | None = None, source: str = "voice") -> dict:
-        slot_id = _slot_id(doctor_id, date.fromisoformat(day), start)
+    def book(
+        self,
+        doctor_id: str,
+        day: str,
+        start: str,
+        phone: str,
+        patient_name: str | None = None,
+        source: str = "voice",
+        reason: str | None = None,
+    ) -> dict:
         with self._lock, self._db:
-            slot = self._db.execute("SELECT id FROM slots WHERE id = ?", (slot_id,)).fetchone()
-            if not slot:
-                raise StoreError("no_such_slot", "That doctor does not have a slot at that time.")
-            starts_at = datetime.combine(date.fromisoformat(day), time.fromisoformat(start), TZ)
-            if starts_at <= now():
-                raise StoreError("slot_in_past", "That time has already passed.")
+            slot_id = self._bookable_slot(doctor_id, day, start)
             try:
-                appointment_id = self._insert_appointment(slot_id, phone, patient_name, source)
+                appointment_id = self._insert_appointment(slot_id, phone, patient_name, source, reason)
             except sqlite3.IntegrityError:
                 raise StoreError("slot_taken", "That slot was just taken.") from None
         return self.appointment(appointment_id)  # type: ignore[return-value]
+
+    def update(
+        self,
+        appointment_id: str,
+        *,
+        patient_name: str | None = None,
+        phone: str | None = None,
+        reason: str | None = None,
+        doctor_id: str | None = None,
+        day: str | None = None,
+        start: str | None = None,
+        status: str | None = None,
+    ) -> dict:
+        """Edit a booking from the front desk: details, a new slot, cancel or restore."""
+        current = self.appointment(appointment_id)
+        if not current:
+            raise StoreError("not_found", "No appointment with that reference.")
+        with self._lock, self._db:
+            fields: dict = {}
+            if patient_name is not None:
+                fields["patient_name"] = patient_name.strip() or None
+            if phone is not None:
+                digits = normalize_phone(phone)
+                if not digits:
+                    raise StoreError("invalid_phone", "Phone must be a 10-digit mobile number.")
+                fields["phone"] = digits
+            if reason is not None:
+                fields["reason"] = reason.strip() or None
+            if doctor_id or day or start:
+                target = (doctor_id or current["doctor_id"], day or current["day"], start or current["start"])
+                if target != (current["doctor_id"], current["day"], current["start"]):
+                    fields["slot_id"] = self._bookable_slot(*target)
+            if status == "cancelled" and current["status"] == "booked":
+                fields["status"] = "cancelled"
+                fields["cancelled_at"] = now().isoformat(timespec="seconds")
+            elif status == "booked" and current["status"] == "cancelled":
+                fields["status"] = "booked"
+                fields["cancelled_at"] = None
+            if fields:
+                sets = ", ".join(f"{k} = ?" for k in fields)
+                try:
+                    self._db.execute(f"UPDATE appointments SET {sets} WHERE id = ?", (*fields.values(), appointment_id))
+                except sqlite3.IntegrityError:
+                    raise StoreError("slot_taken", "That slot is already booked.") from None
+        return self.appointment(appointment_id)  # type: ignore[return-value]
+
+    def _bookable_slot(self, doctor_id: str, day: str, start: str) -> str:
+        slot_id = _slot_id(doctor_id, date.fromisoformat(day), start)
+        slot = self._db.execute("SELECT id FROM slots WHERE id = ?", (slot_id,)).fetchone()
+        if not slot:
+            raise StoreError("no_such_slot", "That doctor does not have a slot at that time.")
+        starts_at = datetime.combine(date.fromisoformat(day), time.fromisoformat(start), TZ)
+        if starts_at <= now():
+            raise StoreError("slot_in_past", "That time has already passed.")
+        return slot_id
 
     def cancel(self, appointment_id: str) -> dict:
         with self._lock, self._db:
@@ -307,11 +370,11 @@ class Store:
                 raise StoreError("not_found", "No active appointment with that reference.")
         return self.appointment(appointment_id)  # type: ignore[return-value]
 
-    def _insert_appointment(self, slot_id: str, phone: str, name: str | None, source: str) -> str:
+    def _insert_appointment(self, slot_id: str, phone: str, name: str | None, source: str, reason: str | None = None) -> str:
         appointment_id = "APT-" + uuid.uuid4().hex[:6].upper()
         self._db.execute(
-            "INSERT INTO appointments (id, slot_id, phone, patient_name, status, source, created_at) VALUES (?, ?, ?, ?, 'booked', ?, ?)",
-            (appointment_id, slot_id, phone, name, source, now().isoformat(timespec="seconds")),
+            "INSERT INTO appointments (id, slot_id, phone, patient_name, reason, status, source, created_at) VALUES (?, ?, ?, ?, ?, 'booked', ?, ?)",
+            (appointment_id, slot_id, phone, name, reason, source, now().isoformat(timespec="seconds")),
         )
         return appointment_id
 

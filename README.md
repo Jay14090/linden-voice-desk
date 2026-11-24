@@ -56,13 +56,22 @@ What's left is mostly network round trips from India: STT finalising (~0.5 s), L
 
 ## Dashboard
 
-React + Vite, plain CSS, no UI kit.
+React + Vite, plain CSS, no UI kit. Two views, switched in the header.
 
-- **Try call** opens a phone on the side of the dashboard: it rings (an Indian ringback tone, synthesised with Web Audio), connects, then shows a call timer, a live waveform (agent in ivory, caller in mint), the transcript, mute / end / speaker buttons, and a ticket card inside the phone when something is booked or cancelled.
+**Front desk**
+- **Try call** opens a phone on the side of the dashboard. It works like a normal call screen: it rings (an Indian ringback tone, synthesised with Web Audio), connects, and shows the timer, an avatar that pulses with whoever is speaking (ivory for Maya, mint for the caller), mute / speaker / end buttons, and a phone-style notification when something gets booked or cancelled. Nothing is transcribed on the phone itself.
+- **Transcript:** the live conversation, shown on the dashboard next to the agent trace.
 - **Schedule:** a timeline per doctor for each of the next seven days. Past time is hatched and a red line marks now. When the agent checks a doctor, their row lights up; when it books, the slot pops amber.
 - **Appointments:** a list grouped by day; new bookings slide in highlighted, cancellations are struck through.
 - **Agent trace:** each tool call with its arguments, result and timing, as it happens.
-- Mobile: the phone goes full screen and the board scrolls sideways.
+
+**Bookings** (the clinic's admin view)
+- Filter by doctor (with upcoming counts) and by status (upcoming, past, cancelled).
+- Search by patient name, phone number or problem.
+- Every booking shows the patient's problem, captured by the agent during the call (`reason` on `book_appointment`).
+- Click a booking to edit the name, number or problem, move it to another doctor, day or free time, or cancel or restore it. **New booking** adds a walk-in or a phoned-in booking by hand. All edits go through the same rules as the agent (10-digit numbers, free future slots only) and update every open screen live.
+
+Mobile: the phone goes full screen and the board scrolls sideways.
 
 ## Run it
 
@@ -110,10 +119,10 @@ server/app/
   turn_text.py  remembers the agent's words this turn, for the read-back guard
   canned.py     pre-rendered greeting, filler and goodbye audio
   speech.py     speaks phone numbers digit by digit
-  main.py       FastAPI: WebRTC signalling, REST for the dashboard, SSE events
+  main.py       FastAPI: WebRTC signalling, REST for the dashboard (incl. edit/create bookings), SSE events
 web/src/
   lib/useCall.ts   Pipecat client, call states, transcript, audio analysers
-  components/      Schedule, Ledger, Activity, Phone, Waveform
+  components/      Schedule, Ledger, Activity, LiveTranscript, Phone, Bookings
 ```
 
 Doctors, specialties and slots are mock data, regenerated relative to today so the demo never goes stale.
