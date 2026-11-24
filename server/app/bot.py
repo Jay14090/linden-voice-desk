@@ -44,6 +44,13 @@ FILLERS = {
     "check_doctor_availability": "Let me check.",
     "book_appointment": "Booking that now.",
     "cancel_appointment": "Cancelling that now.",
+    "reschedule_appointment": "Moving that now.",
+}
+# a filler only plays when the call will actually do the thing, not on a look-up or pre-check
+FILLER_NEEDS = {
+    "book_appointment": "phone_confirmed",
+    "cancel_appointment": "cancel_confirmed",
+    "reschedule_appointment": "change_confirmed",
 }
 
 DEFAULT_VOICE = "hpp4J3VqNfWAUOO0d1Us"  # "Bella", an ElevenLabs default voice usable on the free tier
@@ -191,10 +198,15 @@ async def run_call(connection: SmallWebRTCConnection, store: Store, session_id: 
     async def on_function_calls_started(service, function_calls):
         # Fill the silence while the tool runs and the LLM writes its answer,
         # unless the agent already said something this turn.
-        name = function_calls[0].function_name if function_calls else ""
-        if turn_text.text.strip() or name == "end_call":
+        call = function_calls[0] if function_calls else None
+        name = call.function_name if call else ""
+        if turn_text.text.strip() or name not in FILLERS:
             return
-        filler = FILLERS.get(name, "One moment.")
+        needs = FILLER_NEEDS.get(name)
+        if needs and not (call.arguments or {}).get(needs):
+            filler = "Let me check."
+        else:
+            filler = FILLERS[name]
 
         async def play_filler():
             # Start a beat later so the tool result reaches the context ahead of the

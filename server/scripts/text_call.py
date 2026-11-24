@@ -24,7 +24,7 @@ from openai import OpenAI
 from app.bot import openai_model_kwargs
 from app.prompt import GREETING, system_prompt
 from app.store import Store
-from app.tools import NOT_DONE, TOOLS, caller_said_goodbye, run_tool
+from app.tools import NOT_DONE, TOOLS, ConfirmationTracker, caller_said_goodbye, run_tool
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
@@ -73,6 +73,7 @@ def main():
     print(f"[36mAGENT[0m (fixed): {GREETING}")
 
     last_caller = {"text": ""}
+    tracker = ConfirmationTracker()
 
     def agent_turn():
         while True:
@@ -81,6 +82,7 @@ def main():
             msg = resp.choices[0].message
             messages.append(msg.model_dump(exclude_none=True))
             if msg.content:
+                tracker.agent_said(msg.content)
                 print(f"\033[36mAGENT\033[0m ({time.time()-t:.1f}s): {msg.content.strip()}")
             if not msg.tool_calls:
                 return
@@ -89,7 +91,7 @@ def main():
                 if call.function.name == "end_call" and not caller_said_goodbye(last_caller["text"]):
                     result = dict(NOT_DONE)
                 else:
-                    result = run_tool(store, call.function.name, fargs, msg.content or "")
+                    result = run_tool(store, call.function.name, fargs, msg.content or "", tracker)
                 result.pop("_record", None)
                 print(f"\033[33m  tool\033[0m {call.function.name}({json.dumps(fargs)}) -> ok={result.get('ok')} {result.get('error') or ''}")
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result)})
@@ -104,6 +106,7 @@ def main():
             print(f"\033[32mCALLER\033[0m: {line}")
         messages.append({"role": "user", "content": line})
         last_caller["text"] = line
+        tracker.caller_spoke()
         agent_turn()
 
     print("\nappointments made in this call:")

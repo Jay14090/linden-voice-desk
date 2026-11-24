@@ -30,7 +30,7 @@ export function LiveTranscript({ lines, state }: Props) {
             const t = time12(l.appointment.start);
             return (
               <p key={l.id} className={`tx-event ${l.action}`}>
-                {l.action === "booked" ? "Booked" : "Cancelled"} · {shortDoctor(l.appointment.doctor_name)} · {t.clock} {t.suffix}
+                {l.action === "booked" ? "Booked" : l.action === "rescheduled" ? "Moved to" : "Cancelled"} · {shortDoctor(l.appointment.doctor_name)} · {t.clock} {t.suffix}
               </p>
             );
           }

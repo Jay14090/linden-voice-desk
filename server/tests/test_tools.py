@@ -102,13 +102,13 @@ def test_past_slots_hidden(s, monkeypatch):
 # ---------- book_appointment ----------
 
 def test_book_requires_confirmed_phone(s):
-    r = tools.book_appointment(s, "9876543210", False, "mehta", iso(0), "11:00")
+    r = tools.book_appointment(s, "9876543210", False, "mehta", iso(0), "11:00", "Pat")
     assert r["error"] == "phone_not_confirmed"
     assert "9 8 7 6 5" in r["message"]
 
 
 def test_book_rejects_bad_phone(s):
-    r = tools.book_appointment(s, "98765", True, "mehta", iso(0), "11:00")
+    r = tools.book_appointment(s, "98765", True, "mehta", iso(0), "11:00", "Pat")
     assert r["error"] == "invalid_phone"
 
 
@@ -117,37 +117,37 @@ def test_book_success_and_slot_becomes_taken(s):
     assert r["ok"]
     assert r["appointment"]["time"] == "11 AM"
     assert r["_record"]["phone"] == "9999900000"
-    again = tools.book_appointment(s, "8888800000", True, "mehta", iso(0), "11:00")
+    again = tools.book_appointment(s, "8888800000", True, "mehta", iso(0), "11:00", "Pat")
     assert again["error"] == "slot_taken"
     assert "11:00" not in again["other_free_times_that_day"]
 
 
 def test_book_accepts_12h_time(s):
-    r = tools.book_appointment(s, "9999900000", True, "mehta", iso(0), "5:30 PM")
+    r = tools.book_appointment(s, "9999900000", True, "mehta", iso(0), "5:30 PM", "Pat")
     assert r["ok"] and r["_record"]["start"] == "17:30"
 
 
 def test_book_nonexistent_slot(s):
-    r = tools.book_appointment(s, "9999900000", True, "rao", iso(1), "10:00")  # Rao off on Tuesday
+    r = tools.book_appointment(s, "9999900000", True, "rao", iso(1), "10:00", "Pat")  # Rao off on Tuesday
     assert r["error"] == "no_such_slot"
 
 
 # ---------- cancel_appointment ----------
 
 def test_cancel_single(s):
-    tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00")
-    r = tools.cancel_appointment(s, "99999 00000", True)
+    tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00", "Pat")
+    r = tools.cancel_appointment(s, "99999 00000", True, cancel_confirmed=True)
     assert r["ok"] and r["cancelled"]["status"] == "cancelled"
     # the slot is free again
     assert any(x["start"] == "12:00" and x["free"] for x in s.slots(doctor_id="iyer", day=iso(1)))
 
 
 def test_cancel_multiple_asks_which(s):
-    tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00")
-    tools.book_appointment(s, "9999900000", True, "mehta", iso(2), "10:00")
+    tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00", "Pat")
+    tools.book_appointment(s, "9999900000", True, "mehta", iso(2), "10:00", "Pat")
     r = tools.cancel_appointment(s, "9999900000", True)
     assert r["error"] == "multiple" and len(r["appointments"]) == 2
-    r = tools.cancel_appointment(s, "9999900000", True, doctor_id="mehta")
+    r = tools.cancel_appointment(s, "9999900000", True, cancel_confirmed=True, doctor_id="mehta")
     assert r["ok"] and r["cancelled"]["doctor"] == "Dr. Ananya Mehta"
 
 
@@ -180,7 +180,7 @@ def test_spoken_formats():
 # ---------- read-back guard ----------
 
 def test_guard_blocks_booking_in_same_breath_as_readback(s):
-    args = {"phone_number": "9820123457", "phone_confirmed": True, "doctor_id": "mehta", "date": iso(0), "time": "11:00"}
+    args = {"phone_number": "9820123457", "phone_confirmed": True, "doctor_id": "mehta", "date": iso(0), "time": "11:00", "patient_name": "Ravi"}
     r = tools.run_tool(s, "book_appointment", args, "Your number is 9 8 2 0 1, 2 3 4 5 7. Is that right?")
     assert r["error"] == "awaiting_caller"
     r = tools.run_tool(s, "book_appointment", args, "nine eight two zero one, two three four five seven. Correct?")
@@ -188,12 +188,12 @@ def test_guard_blocks_booking_in_same_breath_as_readback(s):
 
 
 def test_guard_allows_after_caller_answered(s):
-    args = {"phone_number": "9820123457", "phone_confirmed": True, "doctor_id": "mehta", "date": iso(0), "time": "11:00"}
+    args = {"phone_number": "9820123457", "phone_confirmed": True, "doctor_id": "mehta", "date": iso(0), "time": "11:00", "patient_name": "Ravi"}
     assert tools.run_tool(s, "book_appointment", args, "")["ok"]
 
 
 def test_guard_allows_statement_without_question(s):
-    args = {"phone_number": "9820123457", "phone_confirmed": True, "doctor_id": "mehta", "date": iso(0), "time": "11:30"}
+    args = {"phone_number": "9820123457", "phone_confirmed": True, "doctor_id": "mehta", "date": iso(0), "time": "11:30", "patient_name": "Ravi"}
     assert tools.run_tool(s, "book_appointment", args, "Booking that under 98201 23457 now.")["ok"]
 
 
@@ -214,8 +214,8 @@ def test_update_details_and_reschedule(s):
 
 
 def test_update_rejects_taken_slot_and_bad_phone(s):
-    a = tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00")["_record"]
-    tools.book_appointment(s, "8888800000", True, "iyer", iso(1), "12:30")
+    a = tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00", "Pat")["_record"]
+    tools.book_appointment(s, "8888800000", True, "iyer", iso(1), "12:30", "Pat")
     with pytest.raises(store_mod.StoreError) as e:
         s.update(a["id"], start="12:30")
     assert e.value.code == "slot_taken"
@@ -224,7 +224,7 @@ def test_update_rejects_taken_slot_and_bad_phone(s):
 
 
 def test_cancel_and_restore(s):
-    a = tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00")["_record"]
+    a = tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00", "Pat")["_record"]
     assert s.update(a["id"], status="cancelled")["status"] == "cancelled"
     assert s.update(a["id"], status="booked")["status"] == "booked"
 
@@ -240,3 +240,94 @@ def test_cancel_ignores_appointments_already_past_today(s, monkeypatch):
     monkeypatch.setattr(store_mod, "now", lambda: late)
     r = tools.cancel_appointment(s, "9001122334", True)
     assert r["error"] == "no_appointment"
+
+
+
+# ---------- confirmations ----------
+
+def test_book_needs_a_name(s):
+    r = tools.book_appointment(s, "9999900000", True, "mehta", iso(0), "11:00")
+    assert r["error"] == "name_missing"
+
+
+def test_book_readback_message_has_name_and_number(s):
+    r = tools.book_appointment(s, "9999900000", False, "mehta", iso(0), "11:00", "Jay")
+    assert r["error"] == "phone_not_confirmed" and "Jay" in r["message"]
+
+
+def test_cancel_looks_up_first_and_asks(s):
+    tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00", "Jay")
+    r = tools.cancel_appointment(s, "9999900000", True)
+    assert r["error"] == "needs_confirmation"
+    assert "Dr. Kavya Iyer" in r["message"] and "12 PM" in r["message"]
+    # nothing cancelled yet
+    assert any(a["status"] == "booked" for a in s.appointments(phone="9999900000"))
+    r = tools.cancel_appointment(s, "9999900000", True, cancel_confirmed=True, doctor_id=r["doctor_id"], date=r["date"])
+    assert r["ok"]
+
+
+def test_cancel_confirmation_blocked_in_same_breath(s):
+    tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00", "Jay")
+    r = tools.run_tool(s, "cancel_appointment", {"phone_number": "9999900000", "phone_confirmed": True, "cancel_confirmed": True},
+                       "Do you want to cancel your appointment with Dr. Iyer on Tuesday at 12 PM?")
+    assert r["error"] == "awaiting_caller"
+
+
+# ---------- reschedule ----------
+
+def test_reschedule_flow(s):
+    tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00", "Jay")
+    r = tools.reschedule_appointment(s, "9999900000", True, iso(1), "13:00")
+    assert r["error"] == "needs_confirmation" and "from" in r["message"] and "1 PM" in r["message"]
+    r = tools.reschedule_appointment(s, "9999900000", True, iso(1), "13:00", change_confirmed=True)
+    assert r["ok"] and r["_record"]["start"] == "13:00"
+    free = {x["start"]: x["free"] for x in s.slots(doctor_id="iyer", day=iso(1))}
+    assert free["12:00"] and not free["13:00"]
+
+
+def test_reschedule_to_taken_or_missing_slot(s):
+    tools.book_appointment(s, "9999900000", True, "iyer", iso(1), "12:00", "Jay")
+    tools.book_appointment(s, "8888800000", True, "iyer", iso(1), "12:30", "Other")
+    r = tools.reschedule_appointment(s, "9999900000", True, iso(1), "12:30", change_confirmed=True)
+    assert r["error"] == "slot_unavailable" and "12:30" not in r["free_times_that_day"]
+    r = tools.reschedule_appointment(s, "9999900000", True, iso(1), "08:00", change_confirmed=True)
+    assert r["error"] == "slot_unavailable"
+    r = tools.reschedule_appointment(s, "9999900000", True, iso(1), "12:00", change_confirmed=True)
+    assert r["error"] == "same_time"
+
+
+def test_reschedule_needs_confirmed_phone_and_existing_booking(s):
+    r = tools.reschedule_appointment(s, "9999900000", False, iso(1), "13:00")
+    assert r["error"] == "phone_not_confirmed"
+    r = tools.reschedule_appointment(s, "7777700000", True, iso(1), "13:00")
+    assert r["error"] == "no_appointment"
+
+
+def test_reschedule_to_another_doctor(s):
+    tools.book_appointment(s, "9999900000", True, "mehta", iso(1), "10:30", "Jay")
+    r = tools.reschedule_appointment(s, "9999900000", True, iso(1), "12:30", change_confirmed=True, new_doctor_id="iyer")
+    assert r["ok"] and r["_record"]["doctor_id"] == "iyer"
+
+
+def test_tracker_requires_spoken_readback():
+    t = tools.ConfirmationTracker()
+    args = {"phone_number": "9182736450", "phone_confirmed": True, "patient_name": "Jay"}
+    assert t.check("book_appointment", args)["error"] == "phone_not_confirmed"  # never read back
+    t.agent_said("That's Jay, 91827 36450. Is that right?")
+    assert t.check("book_appointment", args)  # caller hasn't answered yet
+    t.caller_spoke()
+    assert t.check("book_appointment", args) is None
+    assert t.check("book_appointment", {**args, "phone_number": "9999900000"})  # a different number
+
+
+def test_tracker_cancel_and_move_need_the_question():
+    t = tools.ConfirmationTracker()
+    t.agent_said("I have 91827 36450. Is that right?")
+    t.caller_spoke()
+    c = {"phone_number": "9182736450", "phone_confirmed": True, "cancel_confirmed": True}
+    assert t.check("cancel_appointment", c)["error"] == "not_asked"
+    t.agent_said("Do you want to cancel your appointment with Dr. Das on Thursday at 11 AM?")
+    t.caller_spoke()
+    assert t.check("cancel_appointment", c) is None
+    m = {"phone_number": "9182736450", "phone_confirmed": True, "change_confirmed": True}
+    assert t.check("reschedule_appointment", m)["error"] == "not_asked"

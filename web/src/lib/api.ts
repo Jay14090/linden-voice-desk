@@ -39,7 +39,7 @@ export type ToolEvent = {
 
 export type AppointmentEvent = {
   session: string;
-  kind: "booked" | "cancelled" | "updated";
+  kind: "booked" | "cancelled" | "updated" | "rescheduled";
   appointment: Appointment;
 };
 

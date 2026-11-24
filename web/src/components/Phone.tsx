@@ -85,9 +85,9 @@ function Notice({ lines }: { lines: Line[] }) {
   const t = time12(a.start);
   return (
     <div className={`notice ${last.action}`} role="status">
-      <span className="notice-ic">{last.action === "booked" ? <Check size={15} /> : <Cross size={15} />}</span>
+      <span className="notice-ic">{last.action === "cancelled" ? <Cross size={15} /> : <Check size={15} />}</span>
       <span className="notice-body">
-        <strong>{last.action === "booked" ? "Appointment booked" : "Appointment cancelled"}</strong>
+        <strong>{last.action === "booked" ? "Appointment booked" : last.action === "rescheduled" ? "Appointment moved" : "Appointment cancelled"}</strong>
         <span>
           {shortDoctor(a.doctor_name)} · {relativeDay(a.day, todayIST())}, {t.clock} {t.suffix} · Room {a.room}
         </span>
@@ -103,6 +103,7 @@ export function PhoneCall({ call, onClose }: { call: CallApi; onClose: () => voi
   const live = state === "connected";
   const booked = call.lines.filter((l) => l.kind === "card" && l.action === "booked").length;
   const cancelled = call.lines.filter((l) => l.kind === "card" && l.action === "cancelled").length;
+  const moved = call.lines.filter((l) => l.kind === "card" && l.action === "rescheduled").length;
 
   // Esc ends a live call, or closes the phone afterwards
   useEffect(() => {
@@ -161,7 +162,7 @@ export function PhoneCall({ call, onClose }: { call: CallApi; onClose: () => voi
             )}
             {state === "ended" && (
               <p className="call-summary">
-                {[booked && `${booked} booked`, cancelled && `${cancelled} cancelled`].filter(Boolean).join(" · ") || "No changes made"}
+                {[booked && `${booked} booked`, moved && `${moved} moved`, cancelled && `${cancelled} cancelled`].filter(Boolean).join(" · ") || "No changes made"}
               </p>
             )}
           </div>

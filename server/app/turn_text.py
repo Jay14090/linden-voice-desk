@@ -9,14 +9,18 @@ from __future__ import annotations
 from pipecat.frames.frames import Frame, LLMTextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from .tools import ConfirmationTracker
+
 
 class AgentTurnText(FrameProcessor):
     def __init__(self):
         super().__init__()
         self.text = ""
         self.last_caller = ""  # what the caller said in their latest turn
+        self.tracker = ConfirmationTracker()
 
     def reset(self, caller_said: str = "") -> None:
+        self.tracker.caller_spoke()
         self.text = ""
         self.last_caller = caller_said
 
@@ -24,4 +28,5 @@ class AgentTurnText(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, LLMTextFrame):
             self.text += frame.text
+            self.tracker.agent_said(frame.text)
         await self.push_frame(frame, direction)

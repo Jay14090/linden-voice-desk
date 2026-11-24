@@ -10,7 +10,7 @@ export type CallState = "idle" | "dialing" | "connected" | "ended" | "failed";
 export type Line =
   | { id: string; kind: "caller"; text: string; final: boolean }
   | { id: string; kind: "agent"; text: string; done: boolean }
-  | { id: string; kind: "card"; action: "booked" | "cancelled"; appointment: Appointment };
+  | { id: string; kind: "card"; action: "booked" | "cancelled" | "rescheduled"; appointment: Appointment };
 
 const MIN_RING_MS = 1400; // at least one full ring, like a real line
 
@@ -186,12 +186,12 @@ export function useCall() {
             setLines((prev) => [...prev, line]);
             return;
           }
-          if (data?.type === "appointment.booked" || data?.type === "appointment.cancelled") {
-            const action = data.type === "appointment.booked" ? "booked" : "cancelled";
+          if (data?.type === "appointment.booked" || data?.type === "appointment.cancelled" || data?.type === "appointment.rescheduled") {
+            const action = data.type.replace("appointment.", "") as "booked" | "cancelled" | "rescheduled";
             agentLineRef.current = null;
             const card: Line = { id: nextId(), kind: "card", action, appointment: data.appointment! };
             setLines((prev) => [...prev, card]);
-            playChime(action);
+            playChime(action === "cancelled" ? "cancelled" : "booked");
           }
         },
         onDisconnected: () => finish(),
