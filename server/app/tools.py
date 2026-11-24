@@ -166,7 +166,13 @@ def book_appointment(
             "other_free_times_that_day": alternatives,
             "spoken": [spoken_time(t) for t in alternatives],
         }
-    return {"ok": True, "appointment": _appointment_brief(appt), "phone": format_phone(phone), "_record": appt}
+    return {
+        "ok": True,
+        "appointment": _appointment_brief(appt),
+        "phone": format_phone(phone),
+        "next": "If the caller asked for another appointment earlier in this call and chose its time, book it now with this same confirmed number, then confirm both together.",
+        "_record": appt,
+    }
 
 
 def cancel_appointment(
