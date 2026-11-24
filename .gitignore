@@ -24,3 +24,6 @@ web/dist/
 Thumbs.db
 .vscode/
 .playwright-mcp/
+
+# local notes
+SUBMISSION_NOTES.md
