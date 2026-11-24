@@ -2,7 +2,7 @@
 
 A caller phones the clinic from the browser and talks to **Maya**, a voice agent who can check a doctor's free slots, book an appointment and cancel one. The caller is identified only by the phone number they say on the call, and the agent reads the number back before booking or cancelling. A live dashboard shows the call, the transcript, every tool call, and the schedule and appointment list changing as the agent works.
 
-**LLM used:** OpenAI `gpt-4.1-mini` in the demo. Google Gemini (`gemini-3.1-flash-lite`) also works by setting `LLM_PROVIDER=google`; I moved the demo to OpenAI because the Gemini free tier was returning 503 "high demand" errors and 2–10 s responses during testing, which is too slow for a phone call.
+**LLM used:** OpenAI `gpt-5.4-mini` (reasoning off) in the demo. Google Gemini (`gemini-3.1-flash-lite`) also works by setting `LLM_PROVIDER=google`; I moved the demo to OpenAI because the Gemini free tier was returning 503 "high demand" errors and 2–10 s responses during testing, which is too slow for a phone call.
 
 ## Pipeline
 
@@ -28,6 +28,26 @@ A caller phones the clinic from the browser and talks to **Maya**, a voice agent
   | `cancel_appointment` | Finds the caller's upcoming appointments by number. If there's more than one, it asks which (by doctor and/or date). |
 - **Read-back guard (`server/app/turn_text.py`):** in testing the model sometimes said "…4 3 2 1 0. Is that right?" and booked in the same reply, before the caller answered. A small processor after the LLM records what the agent has said since the caller last spoke. If that text holds the number and a question, the tool refuses and tells the model to wait. So the confirmation rule is enforced in code, not only in the prompt.
 - **Spoken numbers:** callers say "nine double eight…", and STT returns words. `normalize_phone` turns words, "double"/"triple", `+91` and spaces into 10 digits.
+
+## Latency
+
+Measured with `scripts/e2e_call.py`: the time from when the caller stops speaking to when the agent's first audio plays (full booking call, same scripted caller, same network).
+
+| | before | after |
+|---|---|---|
+| greeting after connect | ~1.5 s (LLM + TTS) | **instant** (pre-rendered) |
+| turns that call a tool, first audio | 3.2–3.4 s | **1.6–1.7 s** |
+| median, all turns | 2.46 s | **1.80 s** |
+| worst turn | 3.43 s | **2.55 s** |
+
+What made the difference:
+- **Pre-rendered audio.** The greeting and short fillers ("Let me check.", "Booking that now.") are rendered once and cached on disk, then played straight into the call with no TTS round trip.
+- **Fillers that don't delay the answer.** When the LLM calls a tool, a cached filler plays (unless the agent already spoke this turn). It starts 150 ms after the call, so the tool result reaches the context first and the LLM writes the answer *while* the filler plays. Pipecat holds the follow-up LLM call until the bot stops speaking, so a filler sent first would otherwise add its own length to the wait (it did: 5–6 s before this fix).
+- **Clean end of speech.** Cached audio ends with a `TTSStoppedFrame`, so the transport knows straight away that the bot stopped, instead of waiting for an idle timeout.
+- **Model choice.** `scripts/llm_latency.py` measures time to first token with the real prompt and tools. `gpt-5.4-mini` (reasoning off) is close to the fastest and followed every rule in the test scripts. `gpt-4.1-mini` is about 0.1 s faster but once mis-grouped the phone read-back; `gpt-5.4-nano` slipped on a multi-booking script. OpenAI's priority tier made no reliable difference from here. Any of them can be set with `OPENAI_MODEL`.
+- **Short first sentence.** Replies open with a few words ("Sure.", "Got it."), so TTS starts on the first sentence while the rest is still being written.
+
+What's left is mostly network round trips from India: STT finalising (~0.5 s), LLM first token (~0.8 s) and TTS first audio (~0.5 s).
 
 ## Dashboard
 
@@ -68,7 +88,8 @@ The ElevenLabs free tier works. It only allows its default voices over the API, 
 cd server
 uv run pytest -q                        # 31 unit tests: slots, booking rules, phone parsing, the read-back guard
 uv run python scripts/text_call.py      # scripted conversation against the real prompt + tools, text only (no audio credits)
-uv run python scripts/e2e_call.py       # full voice test: a synthetic caller phones the running server over WebRTC
+uv run python scripts/e2e_call.py       # full voice test: a synthetic caller phones the running server over WebRTC; prints response gaps
+uv run python scripts/llm_latency.py gpt-5.4-mini gpt-4.1-mini   # time to first token per model, with the real prompt and tools
 ```
 
 `e2e_call.py` synthesises the caller's lines with a second ElevenLabs voice, streams them into the call as microphone audio, takes turns using the agent's RTVI events, then checks the booking landed.
@@ -82,6 +103,7 @@ server/app/
   prompt.py     system prompt (rebuilt per call with today's date and the doctor roster)
   store.py      SQLite: doctors, slots for the next 7 clinic days, appointments
   turn_text.py  remembers the agent's words this turn, for the read-back guard
+  canned.py     pre-rendered greeting and filler audio
   main.py       FastAPI: WebRTC signalling, REST for the dashboard, SSE events
 web/src/
   lib/useCall.ts   Pipecat client, call states, transcript, audio analysers

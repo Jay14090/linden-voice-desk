@@ -23,7 +23,7 @@ from pipecat.transports.smallwebrtc.request_handler import (
     SmallWebRTCRequestHandler,
 )
 
-from .bot import run_call
+from .bot import run_call, warm_phrases
 from .events import bus
 from .prompt import AGENT_NAME, CLINIC_NAME
 from .store import Store, today
@@ -52,6 +52,7 @@ def ensure_fresh_data() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_fresh_data()
+    await warm_phrases()
     missing = [k for k in ("ELEVENLABS_API_KEY", "GOOGLE_API_KEY") if not os.getenv(k)]
     if missing and os.getenv("LLM_PROVIDER", "google") == "google":
         logger.warning(f"missing env: {', '.join(missing)} - calls will fail until set in server/.env")

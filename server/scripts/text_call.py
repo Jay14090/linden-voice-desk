@@ -21,7 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from app.prompt import system_prompt
+from app.bot import openai_model_kwargs
+from app.prompt import GREETING, system_prompt
 from app.store import Store
 from app.tools import TOOLS, run_tool
 
@@ -67,13 +68,14 @@ def main():
     model = os.getenv("OPENAI_MODEL") or "gpt-4.1-mini"
     messages: list[dict] = [
         {"role": "system", "content": system_prompt(store)},
-        {"role": "system", "content": "The call just connected. Greet the caller."},
+        {"role": "assistant", "content": GREETING},
     ]
+    print(f"[36mAGENT[0m (fixed): {GREETING}")
 
     def agent_turn():
         while True:
             t = time.time()
-            resp = client.chat.completions.create(model=model, messages=messages, tools=openai_tools(), temperature=0.4)
+            resp = client.chat.completions.create(model=model, messages=messages, tools=openai_tools(), **openai_model_kwargs(model))
             msg = resp.choices[0].message
             messages.append(msg.model_dump(exclude_none=True))
             if msg.content:
@@ -87,7 +89,6 @@ def main():
                 print(f"\033[33m  tool\033[0m {call.function.name}({json.dumps(fargs)}) -> ok={result.get('ok')} {result.get('error') or ''}")
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result)})
 
-    agent_turn()
     lines = iter(script)
     while True:
         try:

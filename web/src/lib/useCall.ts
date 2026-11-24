@@ -178,7 +178,14 @@ export function useCall() {
           const id = agentLineRef.current;
           if (id) setLines((prev) => prev.map((l) => (l.id === id && l.kind === "agent" ? { ...l, done: true } : l)));
         },
-        onServerMessage: (data: { type?: string; appointment?: Appointment }) => {
+        onServerMessage: (data: { type?: string; appointment?: Appointment; text?: string }) => {
+          // pre-rendered lines (the greeting) arrive as a server message, not bot-output
+          if (data?.type === "agent.line" && data.text) {
+            const line: Line = { id: nextId(), kind: "agent", text: data.text, done: true };
+            agentLineRef.current = null;
+            setLines((prev) => [...prev, line]);
+            return;
+          }
           if (data?.type === "appointment.booked" || data?.type === "appointment.cancelled") {
             const action = data.type === "appointment.booked" ? "booked" : "cancelled";
             agentLineRef.current = null;

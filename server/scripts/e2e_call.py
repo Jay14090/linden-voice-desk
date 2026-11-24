@@ -96,7 +96,8 @@ def post(path: str, body: dict) -> dict:
 
 
 async def main():
-    clips = [tts_pcm(l) for l in LINES]
+    lines = LINES[: int(os.getenv("E2E_LINES", len(LINES)))]  # E2E_LINES=1 for a cheap latency check
+    clips = [tts_pcm(l) for l in lines]
     print(f"synthesised {len(clips)} caller lines")
 
     pc = RTCPeerConnection()
@@ -106,6 +107,10 @@ async def main():
     recorder = MediaRecorder(str(out))
     dc = pc.createDataChannel("chat", ordered=True)
 
+    speech_end = {"t": None}
+    last_said = {"text": "", "got_text": False, "line_t": 0.0}
+    FILLERS = {"Let me check.", "Booking that now.", "Cancelling that now.", "One moment."}
+    gaps: list[float] = []
     bot_speaking = asyncio.Event()
     bot_quiet = asyncio.Event()
     ready = asyncio.Event()
@@ -135,15 +140,28 @@ async def main():
         elif t == "bot-started-speaking":
             bot_quiet.clear()
             bot_speaking.set()
+            # the cached greeting's text can arrive just before its audio starts
+            last_said["got_text"] = time.time() - last_said["line_t"] < 2
+            if speech_end["t"] is not None:
+                gap = time.time() - speech_end["t"]
+                gaps.append(gap)
+                print(f"{stamp()}  [1mresponse gap {gap:.2f}s[0m")
+                speech_end["t"] = None
         elif t == "bot-stopped-speaking":
             bot_speaking.clear()
             bot_quiet.set()
         elif t == "user-transcription" and d.get("final"):
             print(f"{stamp()}  \033[32mCALLER heard as\033[0m: {d.get('text')}")
         elif t == "bot-output" and (d.get("output_type") or d.get("aggregated_by")) == "sentence" and d.get("spoken_status", "new") == "new":
+            last_said["text"] = (d.get("text") or "").strip()
+            last_said["got_text"] = True
             print(f"{stamp()}  \033[36mAGENT\033[0m: {d.get('text')}")
         elif t == "llm-function-call-started" or t == "llm-function-call-in-progress":
             print(f"{stamp()}  \033[33mtool\033[0m {d.get('function_name')} {json.dumps(d.get('arguments') or {})}")
+        elif t == "server-message" and d.get("type") == "agent.line":
+            last_said["got_text"] = True
+            last_said["line_t"] = time.time()
+            print(f"{stamp()}  [36mAGENT (cached)[0m: {d.get('text')}")
         elif t == "server-message":
             print(f"{stamp()}  \033[35mserver\033[0m {d.get('type')} {d.get('appointment', {}).get('id')}")
         events.append(t)
@@ -169,13 +187,19 @@ async def main():
         while True:
             await asyncio.wait_for(bot_quiet.wait(), timeout)
             await asyncio.sleep(1.2)
-            if bot_quiet.is_set():
+            # a filler ("Let me check.") means the real answer is still coming
+            # speech with no text is a cached filler ("Let me check."): the answer is still coming
+            if bot_quiet.is_set() and last_said["got_text"] and last_said["text"] not in FILLERS:
                 return
+            if bot_quiet.is_set():
+                bot_speaking.clear()
+                await asyncio.wait_for(bot_speaking.wait(), timeout)
 
     await wait_for_agent_turn()
-    for line, clip in zip(LINES, clips):
+    for line, clip in zip(lines, clips):
         print(f"{stamp()}  \033[32mCALLER says\033[0m: {line}")
         mic.say(clip)
+        speech_end["t"] = time.time() + len(clip) / RATE
         while mic.talking:
             await asyncio.sleep(0.1)
         try:
@@ -194,7 +218,11 @@ async def main():
     for a in mine:
         print(f"  {a['id']} {a['status']} {a['doctor_name']} {a['day']} {a['start']} {a['patient_name']}")
     print(f"agent audio: {out} ({out.stat().st_size // 1024} KB)")
-    sys.exit(0 if any(a["status"] == "booked" for a in mine) else 1)
+    if gaps:
+        import statistics
+        print(f"response gap (caller stops -> agent audio starts): median {statistics.median(gaps):.2f}s, "
+              f"min {min(gaps):.2f}s, max {max(gaps):.2f}s over {len(gaps)} turns")
+    sys.exit(0 if len(lines) < len(LINES) or any(a["status"] == "booked" for a in mine) else 1)
 
 
 if __name__ == "__main__":

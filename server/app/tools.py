@@ -45,7 +45,7 @@ def spoken_day(iso: str) -> str:
 
 
 def _doctor_brief(d: dict) -> dict:
-    return {"doctor_id": d["id"], "name": d["name"], "specialty": d["specialty"]}
+    return {"doctor_id": d["id"], "name": d["name"], "specialty": d["specialty"], "room": d["room"]}
 
 
 def _appointment_brief(a: dict) -> dict:
