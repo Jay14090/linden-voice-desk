@@ -15,6 +15,7 @@ from typing import Any, Callable
 from loguru import logger
 from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
 from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
+from pipecat.frames.frames import EndWorkerFrame, FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from .events import bus
@@ -298,13 +299,24 @@ TOOLS = ToolsSchema(
             },
             required=["phone_number", "phone_confirmed"],
         ),
+        FunctionSchema(
+            name="end_call",
+            description="Hang up. Call it in the same reply as your goodbye, once the caller says they're done.",
+            properties={},
+            required=[],
+        ),
     ]
 )
+
+def end_call(store: Store) -> dict:
+    return {"ok": True}
+
 
 _IMPLS: dict[str, Callable[..., dict]] = {
     "check_doctor_availability": check_doctor_availability,
     "book_appointment": book_appointment,
     "cancel_appointment": cancel_appointment,
+    "end_call": end_call,
 }
 
 
@@ -347,7 +359,7 @@ def run_tool(store: Store, name: str, args: dict, agent_text_this_turn: str = ""
         return {"ok": False, "error": "internal", "message": f"Something went wrong: {e}"}
 
 
-def register_tools(llm, store: Store, session_id: str, turn_text=None) -> None:
+def register_tools(llm, store: Store, session_id: str, turn_text=None, before_hang_up=None) -> None:
     async def handler(params: FunctionCallParams):
         name = params.function_name
         args = dict(params.arguments or {})
@@ -368,6 +380,14 @@ def register_tools(llm, store: Store, session_id: str, turn_text=None) -> None:
                 await params.pipeline_worker.rtvi.send_server_message({"type": f"appointment.{kind}", "appointment": record})
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"could not notify client: {e}")
+
+        if name == "end_call":
+            # Don't run the LLM again; flush the goodbye that's already queued, then close.
+            await params.result_callback(result, properties=FunctionCallResultProperties(run_llm=False))
+            if before_hang_up:
+                await before_hang_up()  # says goodbye if the agent didn't
+            await params.llm.push_frame(EndWorkerFrame(reason="agent ended the call"))
+            return
 
         await params.result_callback(result)
 

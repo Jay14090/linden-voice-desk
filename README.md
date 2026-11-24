@@ -26,6 +26,10 @@ A caller phones the clinic from the browser and talks to **Maya**, a voice agent
   | `check_doctor_availability` | Free slots for a doctor id, a specialty or a need ("skin", "heart", "child"), optionally for one date. Returns at most three times per day so the agent never reads a long list. |
   | `book_appointment` | Books a slot for the caller's spoken number. Rejects it unless `phone_confirmed` is true, the number is 10 digits and the slot is still free; on a clash it returns the other free times that day. |
   | `cancel_appointment` | Finds the caller's upcoming appointments by number. If there's more than one, it asks which (by doctor and/or date). |
+  | `end_call` | Hangs up once the caller is done. The goodbye (the agent's own, or a cached one if it didn't say any) plays first, then the pipeline closes. |
+- **Problem first:** Maya opens with "What seems to be the problem today?" and maps the answer to a doctor using a list of what each specialty sees (a child always goes to the pediatrician; anything unclear goes to the general physician). She says who and why, and offers times in the same reply.
+- **Phone read-back done in code:** the LLM writes the number as digits ("91827 36450"), which it copies reliably, and a TTS text transform (`server/app/speech.py`) speaks it digit by digit. When the model wrote the words itself it once dropped the leading digit.
+- **Out of scope:** clinic hours are in the prompt. For anything else (address, fees, reports) Maya points the caller to the website (`CLINIC_WEBSITE`).
 - **Read-back guard (`server/app/turn_text.py`):** in testing the model sometimes said "…4 3 2 1 0. Is that right?" and booked in the same reply, before the caller answered. A small processor after the LLM records what the agent has said since the caller last spoke. If that text holds the number and a question, the tool refuses and tells the model to wait. So the confirmation rule is enforced in code, not only in the prompt.
 - **Spoken numbers:** callers say "nine double eight…", and STT returns words. `normalize_phone` turns words, "double"/"triple", `+91` and spaces into 10 digits.
 
@@ -103,7 +107,8 @@ server/app/
   prompt.py     system prompt (rebuilt per call with today's date and the doctor roster)
   store.py      SQLite: doctors, slots for the next 7 clinic days, appointments
   turn_text.py  remembers the agent's words this turn, for the read-back guard
-  canned.py     pre-rendered greeting and filler audio
+  canned.py     pre-rendered greeting, filler and goodbye audio
+  speech.py     speaks phone numbers digit by digit
   main.py       FastAPI: WebRTC signalling, REST for the dashboard, SSE events
 web/src/
   lib/useCall.ts   Pipecat client, call states, transcript, audio analysers

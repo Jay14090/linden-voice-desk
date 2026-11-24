@@ -34,9 +34,10 @@ from pipecat.workers.runner import WorkerRunner
 
 from . import canned
 from .events import bus
-from .prompt import CLINIC_NAME, GREETING, system_prompt
+from .prompt import CLINIC_NAME, GOODBYE, GREETING, system_prompt
 from .store import Store
 from .tools import TOOLS, register_tools
+from .speech import spell_phone_numbers
 from .turn_text import AgentTurnText
 
 FILLERS = {
@@ -86,7 +87,7 @@ async def warm_phrases() -> None:
     if not os.getenv("ELEVENLABS_API_KEY"):
         return
     voice, model = tts_voice_and_model()
-    await canned.warm(os.environ["ELEVENLABS_API_KEY"], voice, model, [GREETING, *FILLERS.values(), "One moment."])
+    await canned.warm(os.environ["ELEVENLABS_API_KEY"], voice, model, [GREETING, GOODBYE, *FILLERS.values(), "One moment."])
 
 
 async def run_call(connection: SmallWebRTCConnection, store: Store, session_id: str) -> None:
@@ -118,12 +119,22 @@ async def run_call(connection: SmallWebRTCConnection, store: Store, session_id: 
         ),
         # ElevenLabs is occasionally slow to start a sentence; don't drop it too early
         stop_frame_timeout_s=8.0,
+        # the LLM writes phone numbers as digits; speak them digit by digit
+        text_transforms=[("*", spell_phone_numbers)],
     )
 
     canned_speech = canned.CannedSpeech(voice, tts_model)
     llm = build_llm(system_prompt(store))
     turn_text = AgentTurnText()
-    register_tools(llm, store, session_id, turn_text)
+    async def before_hang_up():
+        if turn_text.text.strip():
+            return  # the agent already said goodbye in its own words
+        if await canned_speech.say(GOODBYE):
+            await worker.rtvi.send_server_message({"type": "agent.line", "text": GOODBYE})
+        else:
+            await llm.push_frame(TTSSpeakFrame(GOODBYE))
+
+    register_tools(llm, store, session_id, turn_text, before_hang_up)
 
     context = LLMContext(tools=TOOLS)
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
@@ -175,9 +186,9 @@ async def run_call(connection: SmallWebRTCConnection, store: Store, session_id: 
     async def on_function_calls_started(service, function_calls):
         # Fill the silence while the tool runs and the LLM writes its answer,
         # unless the agent already said something this turn.
-        if turn_text.text.strip():
-            return
         name = function_calls[0].function_name if function_calls else ""
+        if turn_text.text.strip() or name == "end_call":
+            return
         filler = FILLERS.get(name, "One moment.")
 
         async def play_filler():
