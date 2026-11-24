@@ -302,7 +302,7 @@ class Store:
             try:
                 appointment_id = self._insert_appointment(slot_id, phone, patient_name, source, reason)
             except sqlite3.IntegrityError:
-                raise StoreError("slot_taken", "That slot was just taken.") from None
+                raise StoreError("slot_taken", "That time is already booked. Pick another slot.") from None
         return self.appointment(appointment_id)  # type: ignore[return-value]
 
     def update(
@@ -332,10 +332,18 @@ class Store:
                 fields["phone"] = digits
             if reason is not None:
                 fields["reason"] = reason.strip() or None
+            final_status = status or current["status"]
+            moving = False
             if doctor_id or day or start:
                 target = (doctor_id or current["doctor_id"], day or current["day"], start or current["start"])
                 if target != (current["doctor_id"], current["day"], current["start"]):
+                    if final_status == "cancelled":
+                        raise StoreError("is_cancelled", "This booking is cancelled. Restore it before changing the time.")
                     fields["slot_id"] = self._bookable_slot(*target)
+                    moving = True
+            if status == "booked" and current["status"] == "cancelled" and not moving:
+                # restoring in place: the original time must still be ahead of us
+                self._bookable_slot(current["doctor_id"], current["day"], current["start"])
             if status == "cancelled" and current["status"] == "booked":
                 fields["status"] = "cancelled"
                 fields["cancelled_at"] = now().isoformat(timespec="seconds")
@@ -347,7 +355,7 @@ class Store:
                 try:
                     self._db.execute(f"UPDATE appointments SET {sets} WHERE id = ?", (*fields.values(), appointment_id))
                 except sqlite3.IntegrityError:
-                    raise StoreError("slot_taken", "That slot is already booked.") from None
+                    raise StoreError("slot_taken", "That time is already booked. Pick another slot.") from None
         return self.appointment(appointment_id)  # type: ignore[return-value]
 
     def _bookable_slot(self, doctor_id: str, day: str, start: str) -> str:
@@ -357,7 +365,7 @@ class Store:
             raise StoreError("no_such_slot", "That doctor does not have a slot at that time.")
         starts_at = datetime.combine(date.fromisoformat(day), time.fromisoformat(start), TZ)
         if starts_at <= now():
-            raise StoreError("slot_in_past", "That time has already passed.")
+            raise StoreError("slot_in_past", "That time has already passed. Pick a later slot.")
         return slot_id
 
     def cancel(self, appointment_id: str) -> dict:

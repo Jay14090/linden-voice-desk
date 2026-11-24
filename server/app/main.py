@@ -11,7 +11,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from fastapi.exceptions import RequestValidationError
+import re
+from datetime import date as _date, time as _time
+from typing import Literal
+
+from pydantic import BaseModel, field_validator
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -64,6 +69,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=f"{CLINIC_NAME} voice desk", lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def readable_validation_error(request: Request, exc: RequestValidationError):
+    msgs = []
+    for err in exc.errors():
+        msg = str(err.get("msg", "Invalid input")).removeprefix("Value error, ")
+        if err.get("type") == "literal_error":
+            msg = "Status must be booked or cancelled."
+        elif err.get("type") == "json_invalid":
+            msg = "Request body isn't valid JSON."
+        elif err.get("type") == "missing":
+            msg = f"{err['loc'][-1].replace('_', ' ').capitalize()} is required."
+        msgs.append(msg)
+    return JSONResponse(status_code=422, content={"detail": " ".join(dict.fromkeys(msgs)) or "Invalid input."})
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
@@ -124,6 +144,65 @@ def appointments():
     return store.appointments()
 
 
+DOCTOR_IDS = {d["id"] for d in store.doctors()} or {"mehta", "rao", "iyer", "sheikh", "kulkarni", "das"}
+
+
+def _check_name(v):
+    if v is None:
+        return v
+    v = re.sub(r"\s+", " ", v).strip()
+    if not v:
+        raise ValueError("Patient name can't be empty.")
+    if len(v) > 80:
+        raise ValueError("Patient name is too long (80 characters max).")
+    return v
+
+
+def _check_reason(v):
+    if v is None:
+        return v
+    v = v.strip()
+    if len(v) > 300:
+        raise ValueError("Problem is too long (300 characters max).")
+    return v
+
+
+def _check_phone(v):
+    if v is None:
+        return v
+    digits = normalize_phone(v)
+    if not digits:
+        raise ValueError("Phone must be a 10-digit mobile number.")
+    return digits
+
+
+def _check_doctor(v):
+    if v is not None and v not in DOCTOR_IDS:
+        raise ValueError("Unknown doctor.")
+    return v
+
+
+def _check_day(v):
+    if v is None:
+        return v
+    try:
+        return _date.fromisoformat(v).isoformat()
+    except (TypeError, ValueError):
+        raise ValueError("Day must be a date like 2026-11-25.") from None
+
+
+def _check_start(v):
+    if v is None:
+        return v
+    if not re.fullmatch(r"\d{2}:\d{2}", v or ""):
+        raise ValueError("Time must look like 10:30.")
+    try:
+        _time.fromisoformat(v)
+    except ValueError:
+        raise ValueError("Time must look like 10:30.") from None
+    return v
+
+
 class AppointmentPatch(BaseModel):
     patient_name: str | None = None
     phone: str | None = None
@@ -131,7 +210,14 @@ class AppointmentPatch(BaseModel):
     doctor_id: str | None = None
     day: str | None = None
     start: str | None = None
-    status: str | None = None
+    status: Literal["booked", "cancelled"] | None = None
+
+    _name = field_validator("patient_name")(classmethod(lambda cls, v: _check_name(v)))
+    _reason = field_validator("reason")(classmethod(lambda cls, v: _check_reason(v)))
+    _phone = field_validator("phone")(classmethod(lambda cls, v: _check_phone(v)))
+    _doctor = field_validator("doctor_id")(classmethod(lambda cls, v: _check_doctor(v)))
+    _day = field_validator("day")(classmethod(lambda cls, v: _check_day(v)))
+    _start = field_validator("start")(classmethod(lambda cls, v: _check_start(v)))
 
 
 class AppointmentCreate(BaseModel):
@@ -139,8 +225,20 @@ class AppointmentCreate(BaseModel):
     day: str
     start: str
     phone: str
-    patient_name: str | None = None
+    patient_name: str
     reason: str | None = None
+
+    _name = field_validator("patient_name")(classmethod(lambda cls, v: _check_name(v)))
+    _reason = field_validator("reason")(classmethod(lambda cls, v: _check_reason(v)))
+    _phone = field_validator("phone")(classmethod(lambda cls, v: _check_phone(v)))
+    _doctor = field_validator("doctor_id")(classmethod(lambda cls, v: _check_doctor(v)))
+    _day = field_validator("day")(classmethod(lambda cls, v: _check_day(v)))
+    _start = field_validator("start")(classmethod(lambda cls, v: _check_start(v)))
+
+
+def _http_error(e: StoreError) -> HTTPException:
+    code = 404 if e.code == "not_found" else 422 if e.code.startswith("invalid") else 409
+    return HTTPException(status_code=code, detail=e.message)
 
 
 @app.patch("/api/appointments/{appointment_id}")
@@ -149,7 +247,7 @@ def edit_appointment(appointment_id: str, patch: AppointmentPatch):
     try:
         after = store.update(appointment_id, **patch.model_dump(exclude_none=True))
     except StoreError as e:
-        raise HTTPException(status_code=404 if e.code == "not_found" else 409, detail=e.message) from None
+        raise _http_error(e) from None
     kind = "cancelled" if before and before["status"] == "booked" and after["status"] == "cancelled" else "updated"
     bus.publish("appointment", {"session": "desk", "kind": kind, "appointment": after})
     return after
@@ -157,13 +255,10 @@ def edit_appointment(appointment_id: str, patch: AppointmentPatch):
 
 @app.post("/api/appointments")
 def create_appointment(body: AppointmentCreate):
-    phone = normalize_phone(body.phone)
-    if not phone:
-        raise HTTPException(status_code=422, detail="Phone must be a 10-digit mobile number.")
     try:
-        appt = store.book(body.doctor_id, body.day, body.start, phone, (body.patient_name or "").strip() or None, source="desk", reason=body.reason)
+        appt = store.book(body.doctor_id, body.day, body.start, body.phone, body.patient_name, source="desk", reason=body.reason or None)
     except StoreError as e:
-        raise HTTPException(status_code=409, detail=e.message) from None
+        raise _http_error(e) from None
     bus.publish("appointment", {"session": "desk", "kind": "booked", "appointment": appt})
     return appt
 

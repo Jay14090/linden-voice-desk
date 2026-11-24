@@ -69,7 +69,7 @@ React + Vite, plain CSS, no UI kit. Two views, switched in the header.
 - Filter by doctor (with upcoming counts) and by status (upcoming, past, cancelled).
 - Search by patient name, phone number or problem.
 - Every booking shows the patient's problem, captured by the agent during the call (`reason` on `book_appointment`).
-- Click a booking to edit the name, number or problem, move it to another doctor, day or free time, or cancel or restore it. **New booking** adds a walk-in or a phoned-in booking by hand. All edits go through the same rules as the agent (10-digit numbers, free future slots only) and update every open screen live.
+- Click a booking to edit the name, number or problem, move it to another doctor, day or free time, or cancel or restore it. **New booking** adds a walk-in or a phoned-in booking by hand. All edits go through the same rules as the agent (10-digit numbers, free future slots only) and update every open screen live. Booked times show in the picker but can't be chosen; if a slot gets taken while you're editing, the form says so instead of quietly switching; a cancelled booking has to be restored before it can move; and the server re-checks everything, returning a plain-English error for any bad input.
 
 Mobile: the phone goes full screen and the board scrolls sideways.
 
@@ -100,7 +100,7 @@ The ElevenLabs free tier works. It only allows its default voices over the API, 
 
 ```bash
 cd server
-uv run pytest -q                        # 31 unit tests: slots, booking rules, phone parsing, the read-back guard
+uv run pytest -q                        # 88 tests: booking rules, phone parsing, read-back guard, API input validation
 uv run python scripts/text_call.py      # scripted conversation against the real prompt + tools, text only (no audio credits)
 uv run python scripts/e2e_call.py       # full voice test: a synthetic caller phones the running server over WebRTC; prints response gaps
 uv run python scripts/llm_latency.py gpt-5.4-mini gpt-4.1-mini   # time to first token per model, with the real prompt and tools

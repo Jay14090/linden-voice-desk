@@ -62,6 +62,13 @@ def _appointment_brief(a: dict) -> dict:
     }
 
 
+def store_now():
+    # looked up at call time so tests can freeze the clock
+    from . import store as _s
+
+    return _s.now()
+
+
 def _phone_error(raw: Any) -> dict:
     return {
         "ok": False,
@@ -156,7 +163,7 @@ def book_appointment(
         return {"ok": False, "error": "bad_date_or_time", "message": "Use date YYYY-MM-DD and time HH:MM (24-hour)."}
 
     try:
-        appt = store.book(doctor_id, day, start, phone, (patient_name or "").strip() or None, reason=(reason or "").strip() or None)
+        appt = store.book(doctor_id, day, start, phone, (patient_name or "").strip()[:80] or None, reason=((reason or "").strip()[:300]) or None)
     except StoreError as e:
         alternatives = [s["start"] for s in store.slots(doctor_id=doctor_id, day=day, only_free=True)][:MAX_SLOTS_PER_DAY]
         return {
@@ -193,7 +200,8 @@ def cancel_appointment(
             "message": f"Read the number back first ({_digits_spoken(phone)}) and wait for the caller to say yes.",
         }
 
-    active = [a for a in store.appointments(phone=phone, include_cancelled=False) if a["day"] >= today().isoformat()]
+    now_key = store_now().strftime("%Y-%m-%d %H:%M")
+    active = [a for a in store.appointments(phone=phone, include_cancelled=False) if f"{a['day']} {a['start']}" > now_key]
     if not active:
         return {"ok": False, "error": "no_appointment", "message": f"No upcoming appointment is booked under {format_phone(phone)}."}
 

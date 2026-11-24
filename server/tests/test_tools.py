@@ -232,3 +232,11 @@ def test_cancel_and_restore(s):
 def test_manual_booking_source(s):
     a = s.book("mehta", iso(1), "10:00", "9999900000", "Walk-in", source="desk", reason="fever")
     assert a["source"] == "desk" and a["reason"] == "fever"
+
+
+def test_cancel_ignores_appointments_already_past_today(s, monkeypatch):
+    # Aditya's seeded 9:30 today is over by noon, so there's nothing to cancel
+    late = datetime(2026, 11, 23, 12, 0, tzinfo=store_mod.TZ)
+    monkeypatch.setattr(store_mod, "now", lambda: late)
+    r = tools.cancel_appointment(s, "9001122334", True)
+    assert r["error"] == "no_appointment"

@@ -204,6 +204,16 @@ type EditorProps = {
   onClose: () => void;
 };
 
+/** Same rules as the server: 10 digits, optionally +91 / 0 prefixed. */
+function normalizePhone(raw: string): string | null {
+  let d = raw.replace(/\D/g, "");
+  if (d.length === 12 && d.startsWith("91")) d = d.slice(2);
+  else if (d.length === 11 && d.startsWith("0")) d = d.slice(1);
+  return d.length === 10 ? d : null;
+}
+
+type SlotOption = { start: string; state: "free" | "booked" | "past" | "own" };
+
 function Editor({ appt, doctors, defaultDoctor, today, onClose }: EditorProps) {
   const creating = !appt;
   const [name, setName] = useState(appt?.patient_name ?? "");
@@ -215,28 +225,68 @@ function Editor({ appt, doctors, defaultDoctor, today, onClose }: EditorProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [touched, setTouched] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
 
   const doc = doctors.find((d) => d.id === doctorId);
+  const cancelled = appt?.status === "cancelled";
+  const isOwn = (d: string, dayV: string, s: string) => !!appt && appt.doctor_id === d && appt.day === dayV && appt.start === s;
 
-  // days this doctor works, and the free times that day (plus the booking's own slot)
-  const days = useMemo(() => [...new Set((doc?.slots ?? []).filter((s) => !s.past).map((s) => s.day))], [doc]);
-  const times = useMemo(() => {
-    const own = appt && appt.doctor_id === doctorId && appt.day === day ? appt.start : null;
-    return (doc?.slots ?? []).filter((s) => s.day === day && !s.past && (s.free || s.start === own)).map((s) => s.start);
-  }, [doc, day, appt, doctorId]);
+  // Days the doctor works from today on, plus the booking's own day even if it's past.
+  const days = useMemo(() => {
+    const set = new Set((doc?.slots ?? []).filter((s) => !s.past).map((s) => s.day));
+    if (appt && appt.doctor_id === doctorId) set.add(appt.day);
+    return [...set].sort();
+  }, [doc, appt, doctorId]);
 
+  // Every slot that day with its state, so booked times are visible (and unselectable).
+  const slotOptions: SlotOption[] = useMemo(() => {
+    const opts: SlotOption[] = (doc?.slots ?? [])
+      .filter((s) => s.day === day)
+      .map((s) => ({
+        start: s.start,
+        state: isOwn(doctorId, day, s.start) ? "own" : s.past ? "past" : s.free ? "free" : "booked",
+      }));
+    if (appt && isOwn(doctorId, day, appt.start) && !opts.some((o) => o.start === appt.start)) {
+      opts.push({ start: appt.start, state: "own" });
+    }
+    return opts.filter((o) => o.state !== "past" || o.start === start).sort((a, b) => a.start.localeCompare(b.start));
+  }, [doc, day, doctorId, appt, start]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Pick sensible defaults when the doctor or day changes, without ever silently
+  // moving an existing booking off its own slot.
   useEffect(() => {
-    if (!days.includes(day)) setDay(days[0] ?? "");
+    if (day && days.includes(day)) return;
+    setDay(days.find((d) => d >= today) ?? days[0] ?? "");
   }, [days]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (!times.includes(start)) setStart(times[0] ?? "");
-  }, [times]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (start && slotOptions.some((o) => o.start === start)) return;
+    setStart(slotOptions.find((o) => o.state === "free" || o.state === "own")?.start ?? "");
+  }, [day, doctorId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const chosen = slotOptions.find((o) => o.start === start);
+  const moved = !creating && !!appt && !isOwn(doctorId, day, start);
+
+  // ---- field checks (the server checks the same things) ----
+  const errors: Record<string, string> = {};
+  if (!name.trim()) errors.name = "Enter the patient's name.";
+  else if (name.trim().length > 80) errors.name = "Keep the name under 80 characters.";
+  if (!normalizePhone(phone)) errors.phone = "Enter a 10-digit mobile number.";
+  if (reason.length > 300) errors.reason = "Keep the problem under 300 characters.";
+  if (!cancelled) {
+    if (!day) errors.slot = `${doc?.name ?? "This doctor"} has no clinic days left this week.`;
+    else if (!start || !chosen) errors.slot = "Pick a time.";
+    else if (chosen.state === "booked") errors.slot = "That time is already booked. Pick another slot.";
+    else if (chosen.state === "past" && (creating || moved)) errors.slot = "That time has already passed.";
+  }
+  const valid = Object.keys(errors).length === 0;
+  const show = (k: string) => (touched || saved || error) && errors[k];
 
   const run = async (fn: () => Promise<unknown>, close = false) => {
     setBusy(true);
@@ -254,19 +304,25 @@ function Editor({ appt, doctors, defaultDoctor, today, onClose }: EditorProps) {
   };
 
   const save = () => {
+    setTouched(true);
+    if (!valid || busy) return;
     if (creating) {
-      return run(() => api.create({ doctor_id: doctorId, day, start, phone, patient_name: name, reason }), true);
+      return run(() => api.create({ doctor_id: doctorId, day, start, phone, patient_name: name.trim(), reason: reason.trim() || undefined }), true);
     }
     const patch: AppointmentPatch = {};
-    if (name !== (appt.patient_name ?? "")) patch.patient_name = name;
-    if (phone.replace(/\D/g, "") !== appt.phone) patch.phone = phone;
-    if (reason !== (appt.reason ?? "")) patch.reason = reason;
-    if (doctorId !== appt.doctor_id || day !== appt.day || start !== appt.start) Object.assign(patch, { doctor_id: doctorId, day, start });
+    if (name.trim() !== (appt.patient_name ?? "")) patch.patient_name = name.trim();
+    if (normalizePhone(phone) !== appt.phone) patch.phone = phone;
+    if (reason.trim() !== (appt.reason ?? "")) patch.reason = reason.trim();
+    if (moved) Object.assign(patch, { doctor_id: doctorId, day, start });
     if (Object.keys(patch).length === 0) return onClose();
     return run(() => api.update(appt.id, patch));
   };
 
-  const cancelled = appt?.status === "cancelled";
+  const label = (o: SlotOption) => {
+    const p = time12(o.start);
+    const t = `${p.clock} ${p.suffix}`;
+    return o.state === "booked" ? `${t} · booked` : o.state === "own" ? `${t} · current` : o.state === "past" ? `${t} · passed` : t;
+  };
 
   return (
     <>
@@ -278,6 +334,7 @@ function Editor({ appt, doctors, defaultDoctor, today, onClose }: EditorProps) {
             {!creating && (
               <p className="sub mono">
                 {appt.id} · booked {appt.source === "voice" ? "by voice" : appt.source === "desk" ? "at the desk" : "earlier"}
+                {cancelled ? " · cancelled" : ""}
               </p>
             )}
           </div>
@@ -286,21 +343,34 @@ function Editor({ appt, doctors, defaultDoctor, today, onClose }: EditorProps) {
           </button>
         </header>
 
-        <div className="drawer-body">
-          <label className="field">
+        <form
+          className="drawer-body"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+          noValidate
+        >
+          <label className={`field ${show("name") ? "invalid" : ""}`}>
             <span>Patient name</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" />
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" maxLength={120} autoFocus={creating} />
+            {show("name") && <em className="field-err">{errors.name}</em>}
           </label>
-          <label className="field">
+          <label className={`field ${show("phone") ? "invalid" : ""}`}>
             <span>Mobile number</span>
-            <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="98765 43210" inputMode="tel" className="mono" />
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="98765 43210" inputMode="tel" className="mono" maxLength={20} />
+            {show("phone") && <em className="field-err">{errors.phone}</em>}
           </label>
-          <label className="field">
-            <span>Problem</span>
-            <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} placeholder="What the patient is coming in for" />
+          <label className={`field ${show("reason") ? "invalid" : ""}`}>
+            <span>
+              Problem <small className="count-hint">{reason.length}/300</small>
+            </span>
+            <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} placeholder="What the patient is coming in for" maxLength={400} />
+            {show("reason") && <em className="field-err">{errors.reason}</em>}
           </label>
 
-          <div className="field-group">
+          <fieldset className={`field-group ${cancelled ? "locked" : ""}`} disabled={cancelled}>
+            {cancelled && <p className="lock-note">This booking is cancelled. Restore it to change the time.</p>}
             <label className="field">
               <span>Doctor</span>
               <select value={doctorId} onChange={(e) => setDoctorId(e.target.value)}>
@@ -315,12 +385,13 @@ function Editor({ appt, doctors, defaultDoctor, today, onClose }: EditorProps) {
               <label className="field">
                 <span>Day</span>
                 <select value={day} onChange={(e) => setDay(e.target.value)} disabled={!days.length}>
-                  {days.length === 0 && <option>No days this week</option>}
+                  {days.length === 0 && <option value="">No days this week</option>}
                   {days.map((d) => {
                     const p = dayParts(d);
                     return (
                       <option key={d} value={d}>
                         {d === today ? "Today" : `${p.weekday} ${p.date} ${p.month}`}
+                        {d < today ? " · passed" : ""}
                       </option>
                     );
                   })}
@@ -328,41 +399,45 @@ function Editor({ appt, doctors, defaultDoctor, today, onClose }: EditorProps) {
               </label>
               <label className="field">
                 <span>Time</span>
-                <select value={start} onChange={(e) => setStart(e.target.value)} disabled={!times.length}>
-                  {times.length === 0 && <option>Fully booked</option>}
-                  {times.map((t) => {
-                    const p = time12(t);
-                    return (
-                      <option key={t} value={t}>
-                        {p.clock} {p.suffix}
-                      </option>
-                    );
-                  })}
+                <select value={start} onChange={(e) => setStart(e.target.value)} disabled={!slotOptions.length}>
+                  {slotOptions.length === 0 && <option value="">No slots</option>}
+                  {slotOptions.map((o) => (
+                    <option key={o.start} value={o.start} disabled={o.state === "booked" || (o.state === "past" && o.start !== start)}>
+                      {label(o)}
+                    </option>
+                  ))}
                 </select>
               </label>
             </div>
-          </div>
+            {show("slot") || (chosen?.state === "booked" && errors.slot) ? <em className="field-err">{errors.slot}</em> : null}
+          </fieldset>
 
           {error && <p className="form-error">{error}</p>}
-          {saved && <p className="form-ok">Saved.</p>}
-        </div>
+          {saved && !error && <p className="form-ok">Saved.</p>}
+          <button type="submit" hidden />
+        </form>
 
         <footer className="drawer-foot">
           {!creating && (
             <button
               className={cancelled ? "btn-ghost" : "btn-danger"}
               disabled={busy}
-              onClick={() => run(() => api.update(appt.id, { status: cancelled ? "booked" : "cancelled" }))}
+              onClick={() => {
+                if (!cancelled && !confirmCancel) return setConfirmCancel(true); // two-step, no browser popup
+                setConfirmCancel(false);
+                void run(() => api.update(appt.id, { status: cancelled ? "booked" : "cancelled" }));
+              }}
+              onBlur={() => setConfirmCancel(false)}
             >
-              {cancelled ? "Restore booking" : "Cancel appointment"}
+              {cancelled ? "Restore booking" : confirmCancel ? `Yes, cancel with ${shortDoctor(appt.doctor_name)}` : "Cancel appointment"}
             </button>
           )}
           <span className="grow" />
           <button className="btn-ghost" onClick={onClose}>
             Close
           </button>
-          <button className="btn-primary" disabled={busy || !start || !phone || cancelled} onClick={() => void save()}>
-            {creating ? "Book" : "Save changes"}
+          <button className="btn-primary" disabled={busy || cancelled || (touched && !valid) || chosen?.state === "booked"} onClick={() => void save()}>
+            {busy ? "Saving…" : creating ? "Book" : "Save changes"}
           </button>
         </footer>
       </aside>
